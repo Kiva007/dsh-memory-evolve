@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import {
+  REMOTE_TIMEOUT_MS,
   acquireUpdateLock,
   compareVersions,
   createUpdateChecker,
@@ -719,6 +720,27 @@ async function invokeUpdateHandler(repoDir, { headers, socket, body }) {
   await ctx.handler(req, res)
   return captured
 }
+
+test('[P1-1] 远端检测超时放宽到 30s（慢链路不再随机 error）', async () => {
+  const { consumer } = setupRepo()
+  const calls = []
+  const checker = createUpdateChecker({
+    repoDir: consumer,
+    now: advancingClock(),
+    run: async (cmd, args, opts) => {
+      calls.push({ args, timeout: opts?.timeout })
+      return realRun(cmd, args, opts)
+    },
+  })
+  const state = await checker.status(true)
+  assert.equal(state.status, 'outdated')
+  const lsRemote = calls.find((c) => c.args[0] === 'ls-remote')
+  assert.ok(lsRemote, 'status 必须执行 ls-remote 检测')
+  // 实测本机 `git ls-remote --tags origin` 2.1s–17.0s：8s 上限会随机超时，
+  // 远端只读命令统一用 REMOTE_TIMEOUT_MS（对齐 lib/sync/repo.js 30s）。
+  assert.equal(lsRemote.timeout, REMOTE_TIMEOUT_MS)
+  assert.ok(REMOTE_TIMEOUT_MS >= 30000, '远端检测超时不得低于 30s')
+})
 
 test('[P1-5] API 契约：status DTO 白名单不泄漏内部字段', async () => {
   const { consumer } = setupRepo()
